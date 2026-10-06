@@ -1,6 +1,6 @@
 # İlaç Hatırlatıcı
 
-Offline Android medication reminder app. This repository currently contains the Phase 01 Expo foundation only; medication records and reminders are not implemented yet.
+Offline Android medication reminder app. Medication details and schedules are stored locally in SQLite. Reminder scheduling, photos, and dose logging are not implemented yet.
 
 ## Development
 

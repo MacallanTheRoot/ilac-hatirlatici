@@ -24,7 +24,7 @@ export default function TodayScreen() {
       </View>
       <Text style={styles.date}>{today}</Text>
       <View style={styles.card}>
-        <Text style={styles.emptyText}>Henüz ilaç eklenmedi.</Text>
+        <Text style={styles.emptyText}>Bugünkü ilaçlar burada görünecek.</Text>
       </View>
     </Screen>
   );

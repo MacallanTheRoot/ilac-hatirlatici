@@ -6,11 +6,14 @@ import { colors, spacing } from '@/theme/tokens';
 
 type ScreenProps = {
   children: ReactNode;
+  includeBottomInset?: boolean;
 };
 
-export function Screen({ children }: ScreenProps) {
+export function Screen({ children, includeBottomInset = false }: ScreenProps) {
   return (
-    <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
+    <SafeAreaView
+      edges={includeBottomInset ? ['top', 'left', 'right', 'bottom'] : ['top', 'left', 'right']}
+      style={styles.container}>
       {children}
     </SafeAreaView>
   );

@@ -22,6 +22,8 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="settings" />
+          <Stack.Screen name="medication/new" />
+          <Stack.Screen name="medication/[id]" />
         </Stack>
       </SQLiteProvider>
     </Suspense>
