@@ -22,6 +22,7 @@ import {
 } from '@/db/medications';
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 import { deleteMedicationPhoto, persistMedicationPhoto } from '@/services/medicationPhotos';
+import { syncMedicationReminders } from '@/notifications/scheduler';
 import { EVERY_DAY, WEEKDAYS, type MedicationInput } from '@/types/medication';
 import { MedicationValidationError, normalizeMedicationInput } from '@/utils/medication';
 
@@ -202,16 +203,18 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
     setIsSaving(true);
     setError(null);
     let newPhotoPath: string | null = null;
-    try {
-      if (selectedPhoto) {
-        try {
-          newPhotoPath = await persistMedicationPhoto(selectedPhoto);
-        } catch (cause) {
-          console.error('Could not persist medication photo:', cause);
-          setError('Fotoğraf eklenemedi. Lütfen tekrar deneyin.');
-          return;
-        }
+    if (selectedPhoto) {
+      try {
+        newPhotoPath = await persistMedicationPhoto(selectedPhoto);
+      } catch (cause) {
+        console.error('Could not persist medication photo:', cause);
+        setError('Fotoğraf eklenemedi. Lütfen tekrar deneyin.');
+        savingRef.current = false;
+        setIsSaving(false);
+        return;
       }
+    }
+    try {
       const finalPhotoPath = newPhotoPath ?? (photoRemoved ? null : existingPhotoPath);
       const savedInput = { ...input, photoPath: finalPhotoPath };
       if (medicationId === undefined) {
@@ -229,10 +232,9 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
         }
       }
       setError('İlaç kaydedilemedi. Lütfen tekrar deneyin.');
-      return;
-    } finally {
       savingRef.current = false;
       setIsSaving(false);
+      return;
     }
 
     if (existingPhotoPath && (photoRemoved || newPhotoPath)) {
@@ -242,7 +244,24 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
         console.warn('Could not remove replaced medication photo:', cause);
       }
     }
-    router.dismissTo('/medications');
+    let reminderWarning = false;
+    try {
+      const result = await syncMedicationReminders(db);
+      reminderWarning = result.status !== 'scheduled';
+    } catch (cause) {
+      console.error('Could not update reminders after medication save:', cause);
+      reminderWarning = true;
+    }
+    if (reminderWarning) {
+      Alert.alert(
+        'Hatırlatma uyarısı',
+        'İlaç kaydedildi ancak hatırlatmalar güncellenemedi. Hatırlatma ayarlarını kontrol edin.',
+        [{ text: 'Tamam', onPress: () => router.dismissTo('/medications') }],
+        { cancelable: false },
+      );
+    } else {
+      router.dismissTo('/medications');
+    }
   }
 
   async function removeMedication() {
@@ -252,13 +271,30 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
     setError(null);
     try {
       await deactivateMedication(db, medicationId);
-      router.dismissTo('/medications');
     } catch (cause) {
       console.error('Could not deactivate medication:', cause);
       setError('İlaç kaldırılamadı. Lütfen tekrar deneyin.');
-    } finally {
       savingRef.current = false;
       setIsSaving(false);
+      return;
+    }
+    let reminderWarning = false;
+    try {
+      const result = await syncMedicationReminders(db);
+      reminderWarning = result.status !== 'scheduled';
+    } catch (cause) {
+      console.error('Could not update reminders after medication removal:', cause);
+      reminderWarning = true;
+    }
+    if (reminderWarning) {
+      Alert.alert(
+        'Hatırlatma uyarısı',
+        'İlaç kaldırıldı ancak hatırlatmalar güncellenemedi. Hatırlatma ayarlarını kontrol edin.',
+        [{ text: 'Tamam', onPress: () => router.dismissTo('/medications') }],
+        { cancelable: false },
+      );
+    } else {
+      router.dismissTo('/medications');
     }
   }
 

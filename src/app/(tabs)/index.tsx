@@ -1,12 +1,20 @@
 import { Link, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MedicationPhoto } from '@/components/MedicationPhoto';
 import { Screen } from '@/components/Screen';
 import { getDoseLogsForRange, markDoseTaken } from '@/db/doseLogs';
 import { getMedicationTimeline } from '@/db/medications';
+import { subscribeDoseStateChanged, subscribeReminderStateChanged } from '@/notifications/events';
+import {
+  cancelDoseNotifications,
+  getReminderPermission,
+  requestReminderPermission,
+  syncMedicationReminders,
+  type ReminderPermission,
+} from '@/notifications/scheduler';
 import {
   formatLocalDate, formatLocalTime, localDayOffset, localDayStart, occurrencesForLocalDate,
 } from '@/services/doseOccurrences';
@@ -25,6 +33,9 @@ export default function TodayScreen() {
   const [loadError, setLoadError] = useState(false);
   const [actionErrorKey, setActionErrorKey] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [reminderPermission, setReminderPermission] = useState<ReminderPermission | null>(null);
+  const [reminderBusy, setReminderBusy] = useState(false);
+  const [reminderError, setReminderError] = useState(false);
   const loadingToken = useRef(0);
   const dayStartRef = useRef(0);
   const loggingRef = useRef(false);
@@ -53,11 +64,34 @@ export default function TodayScreen() {
       });
   }, [db]);
 
+  const refreshReminderPermission = useCallback(() => {
+    void getReminderPermission()
+      .then((permission) => {
+        setReminderPermission(permission);
+        setReminderError(false);
+      })
+      .catch((cause: unknown) => {
+        console.error('Could not check reminder permission:', cause);
+        setReminderError(true);
+      });
+  }, []);
+
   useFocusEffect(useCallback(() => {
     const current = Date.now();
     setNow(current);
     dayStartRef.current = localDayStart(new Date(current)).getTime();
     loadToday(current);
+    refreshReminderPermission();
+    const unsubscribeDose = subscribeDoseStateChanged(() => loadToday(Date.now()));
+    const unsubscribeReminder = subscribeReminderStateChanged(refreshReminderPermission);
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      const resumedAt = Date.now();
+      setNow(resumedAt);
+      dayStartRef.current = localDayStart(new Date(resumedAt)).getTime();
+      loadToday(resumedAt);
+      refreshReminderPermission();
+    });
     const timer = setInterval(() => {
       const next = Date.now();
       setNow(next);
@@ -69,9 +103,36 @@ export default function TodayScreen() {
     }, 60_000);
     return () => {
       clearInterval(timer);
+      unsubscribeDose();
+      unsubscribeReminder();
+      appStateSubscription.remove();
       loadingToken.current++;
     };
-  }, [loadToday]));
+  }, [loadToday, refreshReminderPermission]));
+
+  async function enableReminders() {
+    if (reminderBusy) return;
+    setReminderBusy(true);
+    setReminderError(false);
+    try {
+      const current = await getReminderPermission();
+      if (!current.granted && !current.canAskAgain) {
+        await Linking.openSettings();
+        return;
+      }
+      const permission = await requestReminderPermission();
+      setReminderPermission(permission);
+      if (permission.granted) {
+        const result = await syncMedicationReminders(db);
+        if (result.status === 'partialFailure') setReminderError(true);
+      }
+    } catch (cause) {
+      console.error('Could not enable medication reminders:', cause);
+      setReminderError(true);
+    } finally {
+      setReminderBusy(false);
+    }
+  }
 
   async function confirmTaken(occurrence: DoseOccurrence) {
     if (loggingRef.current || occurrence.status === 'taken') return;
@@ -88,6 +149,15 @@ export default function TodayScreen() {
       setOccurrences((current) => current.map((item) => occurrenceKey(item) === key
         ? { ...item, doseLogId: log.id, status: log.status, takenAt: log.takenAt }
         : item));
+      try {
+        await cancelDoseNotifications(occurrence);
+        const result = await syncMedicationReminders(db);
+        if (result.status === 'partialFailure') {
+          console.warn('Dose saved but reminder synchronization was incomplete:', result);
+        }
+      } catch (cause) {
+        console.warn('Dose saved but reminders could not be updated:', cause);
+      }
     } catch (cause) {
       console.error('Could not confirm dose:', cause);
       setActionErrorKey(key);
@@ -131,6 +201,19 @@ export default function TodayScreen() {
             {summary ? <Text style={styles.summary}>{summary}</Text> : null}
           </View>
         ) : null}
+        {reminderPermission && !reminderPermission.granted ? (
+          <View style={styles.summaryCard}>
+            <Text style={styles.reminderWarning}>Hatırlatmalar kapalı</Text>
+            <Pressable accessibilityRole="button" disabled={reminderBusy}
+              style={[styles.reminderButton, reminderBusy && styles.disabled]}
+              onPress={() => { void enableReminders(); }}>
+              <Text style={styles.retryText}>Hatırlatmaları etkinleştir</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {reminderError ? (
+          <Text style={styles.error}>Hatırlatmalar güncellenemedi. Lütfen tekrar deneyin.</Text>
+        ) : null}
 
         {loading ? <Text style={styles.message}>Bugünkü ilaçlar yükleniyor…</Text> : null}
         {!loading && loadError ? (
@@ -173,8 +256,10 @@ export default function TodayScreen() {
               ) : (
                 <>
                   <Text style={styles.statusText}>
-                    {now !== null && occurrence.scheduledAt < now
-                      ? 'Alındığı doğrulanmadı' : 'Bekliyor'}
+                    {occurrence.status === 'snoozed'
+                      ? 'Hatırlatma ertelendi'
+                      : now !== null && occurrence.scheduledAt < now
+                        ? 'Alındığı doğrulanmadı' : 'Bekliyor'}
                   </Text>
                   <Pressable accessibilityRole="button" disabled={busyKey !== null}
                     style={[styles.takenButton, busyKey !== null && styles.disabled]}
@@ -217,6 +302,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.card, padding: spacing.large, gap: spacing.small,
   },
   progress: { color: colors.text, fontSize: 22, fontWeight: fontWeight.bold },
+  reminderWarning: { color: colors.danger, fontSize: 22, fontWeight: fontWeight.bold },
+  reminderButton: {
+    minHeight: touchTarget.primary, justifyContent: 'center', alignSelf: 'flex-start',
+    paddingHorizontal: spacing.medium, borderColor: colors.accent, borderWidth: 1,
+    borderRadius: radius.button,
+  },
   summary: { color: colors.text, fontSize: fontSize.body },
   card: {
     backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1,

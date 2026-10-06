@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import { StatusBar, StyleSheet, Text, View } from 'react-native';
 
 import { DATABASE_NAME, initializeDatabase } from '@/db/database';
+import { NotificationBootstrap } from '@/notifications/NotificationBootstrap';
 import { colors, fontSize } from '@/theme/tokens';
 
 function DatabaseLoading() {
@@ -18,6 +19,7 @@ export default function RootLayout() {
   return (
     <Suspense fallback={<DatabaseLoading />}>
       <SQLiteProvider databaseName={DATABASE_NAME} onInit={initializeDatabase} useSuspense>
+        <NotificationBootstrap />
         <StatusBar barStyle="dark-content" backgroundColor={colors.background} />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
