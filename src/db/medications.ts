@@ -1,6 +1,7 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
 import { assertForeignKeysValid } from '@/db/database';
+import { isOwnedMedicationPhoto } from '@/services/medicationPhotos';
 import type {
   Medication,
   MedicationInput,
@@ -128,16 +129,20 @@ export async function getMedicationById(
 
 export async function createMedication(db: SQLiteDatabase, input: MedicationInput): Promise<number> {
   const normalized = normalizeMedicationInput(input);
+  if (normalized.photoPath && !isOwnedMedicationPhoto(normalized.photoPath)) {
+    throw new Error('Photo path is outside app-owned storage.');
+  }
   const now = Date.now();
   let medicationId = 0;
 
   await db.withExclusiveTransactionAsync(async (txn) => {
     const result = await txn.runAsync(
-      `INSERT INTO medications (name, dosage, instructions, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO medications (name, dosage, instructions, photo_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       normalized.name,
       normalized.dosage,
       normalized.instructions,
+      normalized.photoPath,
       now,
       now,
     );
@@ -155,15 +160,19 @@ export async function updateMedication(
   input: MedicationInput,
 ): Promise<void> {
   const normalized = normalizeMedicationInput(input);
+  if (normalized.photoPath && !isOwnedMedicationPhoto(normalized.photoPath)) {
+    throw new Error('Photo path is outside app-owned storage.');
+  }
   const now = Date.now();
 
   await db.withExclusiveTransactionAsync(async (txn) => {
     const result = await txn.runAsync(
-      `UPDATE medications SET name = ?, dosage = ?, instructions = ?, updated_at = ?
+      `UPDATE medications SET name = ?, dosage = ?, instructions = ?, photo_path = ?, updated_at = ?
        WHERE id = ? AND is_active = 1`,
       normalized.name,
       normalized.dosage,
       normalized.instructions,
+      normalized.photoPath,
       now,
       id,
     );

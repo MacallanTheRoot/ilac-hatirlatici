@@ -1,4 +1,5 @@
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 
 import { Screen } from '@/components/Screen';
+import { MedicationPhoto } from '@/components/MedicationPhoto';
 import {
   createMedication,
   deactivateMedication,
@@ -19,6 +21,7 @@ import {
   updateMedication,
 } from '@/db/medications';
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
+import { deleteMedicationPhoto, persistMedicationPhoto } from '@/services/medicationPhotos';
 import { EVERY_DAY, WEEKDAYS, type MedicationInput } from '@/types/medication';
 import { MedicationValidationError, normalizeMedicationInput } from '@/utils/medication';
 
@@ -45,12 +48,17 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
   const [name, setName] = useState('');
   const [dosage, setDosage] = useState('');
   const [instructions, setInstructions] = useState('');
+  const [existingPhotoPath, setExistingPhotoPath] = useState<string | null>(null);
+  const [selectedPhoto, setSelectedPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [photoRemoved, setPhotoRemoved] = useState(false);
   const [schedules, setSchedules] = useState<ScheduleDraft[]>([emptySchedule(0)]);
   const [loading, setLoading] = useState(medicationId !== undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isChoosingPhoto, setIsChoosingPhoto] = useState(false);
   const savingRef = useRef(false);
+  const photoActionRef = useRef(false);
   const nextScheduleKey = useRef(1);
 
   useEffect(() => {
@@ -66,6 +74,7 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
         setName(medication.name);
         setDosage(medication.dosage);
         setInstructions(medication.instructions ?? '');
+        setExistingPhotoPath(medication.photoPath);
         setSchedules(medication.schedules.map((schedule, index) => ({
           key: index,
           hour: String(schedule.hour).padStart(2, '0'),
@@ -116,6 +125,7 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
       name,
       dosage,
       instructions,
+      photoPath: photoRemoved ? null : existingPhotoPath,
       schedules: schedules.map((schedule) => ({
         hour: parseTimePart(schedule.hour),
         minute: parseTimePart(schedule.minute),
@@ -124,8 +134,59 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
     });
   }
 
+  async function choosePhoto(source: 'camera' | 'gallery') {
+    if (savingRef.current || photoActionRef.current) return;
+    photoActionRef.current = true;
+    setIsChoosingPhoto(true);
+    setError(null);
+    try {
+      if (source === 'camera') {
+        const currentPermission = await ImagePicker.getCameraPermissionsAsync();
+        const permission = currentPermission.granted
+          ? currentPermission
+          : currentPermission.canAskAgain
+            ? await ImagePicker.requestCameraPermissionsAsync()
+            : currentPermission;
+        if (!permission.granted) {
+          setError('Fotoğraf çekmek için kamera izni gerekiyor.');
+          return;
+        }
+      }
+
+      const options: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        allowsMultipleSelection: false,
+        quality: 0.85,
+        base64: false,
+        exif: false,
+      };
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync({ ...options, cameraType: ImagePicker.CameraType.back })
+        : await ImagePicker.launchImageLibraryAsync(options);
+      if (result.canceled) return;
+      const photo = result.assets[0];
+      if (!photo?.uri) throw new Error('Image picker returned no photo URI.');
+      setSelectedPhoto(photo);
+      setPhotoRemoved(false);
+    } catch (cause) {
+      console.error('Could not choose medication photo:', cause);
+      setError('Fotoğraf eklenemedi. Lütfen tekrar deneyin.');
+    } finally {
+      photoActionRef.current = false;
+      setIsChoosingPhoto(false);
+    }
+  }
+
+  function removePhoto() {
+    if (savingRef.current || photoActionRef.current) return;
+    setSelectedPhoto(null);
+    setPhotoRemoved(true);
+    setError(null);
+  }
+
   async function save() {
-    if (savingRef.current) return;
+    if (savingRef.current || photoActionRef.current) return;
     let input: MedicationInput;
     try {
       input = buildInput();
@@ -140,24 +201,52 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
     savingRef.current = true;
     setIsSaving(true);
     setError(null);
+    let newPhotoPath: string | null = null;
     try {
-      if (medicationId === undefined) {
-        await createMedication(db, input);
-      } else {
-        await updateMedication(db, medicationId, input);
+      if (selectedPhoto) {
+        try {
+          newPhotoPath = await persistMedicationPhoto(selectedPhoto);
+        } catch (cause) {
+          console.error('Could not persist medication photo:', cause);
+          setError('Fotoğraf eklenemedi. Lütfen tekrar deneyin.');
+          return;
+        }
       }
-      router.dismissTo('/medications');
+      const finalPhotoPath = newPhotoPath ?? (photoRemoved ? null : existingPhotoPath);
+      const savedInput = { ...input, photoPath: finalPhotoPath };
+      if (medicationId === undefined) {
+        await createMedication(db, savedInput);
+      } else {
+        await updateMedication(db, medicationId, savedInput);
+      }
     } catch (cause) {
       console.error('Could not save medication:', cause);
+      if (newPhotoPath) {
+        try {
+          deleteMedicationPhoto(newPhotoPath);
+        } catch (cleanupError) {
+          console.warn('Could not clean up unsaved medication photo:', cleanupError);
+        }
+      }
       setError('İlaç kaydedilemedi. Lütfen tekrar deneyin.');
+      return;
     } finally {
       savingRef.current = false;
       setIsSaving(false);
     }
+
+    if (existingPhotoPath && (photoRemoved || newPhotoPath)) {
+      try {
+        deleteMedicationPhoto(existingPhotoPath);
+      } catch (cause) {
+        console.warn('Could not remove replaced medication photo:', cause);
+      }
+    }
+    router.dismissTo('/medications');
   }
 
   async function removeMedication() {
-    if (medicationId === undefined || savingRef.current) return;
+    if (medicationId === undefined || savingRef.current || photoActionRef.current) return;
     savingRef.current = true;
     setIsSaving(true);
     setError(null);
@@ -174,7 +263,7 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
   }
 
   function confirmRemove() {
-    if (isSaving || medicationId === undefined) return;
+    if (isSaving || isChoosingPhoto || medicationId === undefined) return;
     Alert.alert(
       'İlacı kaldır',
       'Bu ilaç listeden kaldırılacak. Devam etmek istiyor musunuz?',
@@ -198,6 +287,9 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
       </Screen>
     );
   }
+
+  const isBusy = isSaving || isChoosingPhoto;
+  const previewUri = selectedPhoto?.uri ?? (photoRemoved ? null : existingPhotoPath);
 
   return (
     <Screen includeBottomInset>
@@ -243,6 +335,30 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
             placeholder="Ek not"
             placeholderTextColor={colors.secondaryText}
           />
+        </View>
+
+        <View style={styles.photoSection}>
+          <Text style={styles.sectionTitle}>İlaç fotoğrafı</Text>
+          <MedicationPhoto uri={previewUri} size={208} showEmptyMessage />
+          <View style={styles.photoActions}>
+            <Pressable accessibilityRole="button" disabled={isBusy}
+              style={[styles.photoButton, isBusy && styles.disabled]}
+              onPress={() => { void choosePhoto('camera'); }}>
+              <Text style={styles.linkText}>Fotoğraf çek</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={isBusy}
+              style={[styles.photoButton, isBusy && styles.disabled]}
+              onPress={() => { void choosePhoto('gallery'); }}>
+              <Text style={styles.linkText}>Galeriden seç</Text>
+            </Pressable>
+          </View>
+          {previewUri ? (
+            <Pressable accessibilityRole="button" disabled={isBusy}
+              style={[styles.removePhotoButton, isBusy && styles.disabled]}
+              onPress={removePhoto}>
+              <Text style={styles.removeTimeText}>Fotoğrafı kaldır</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <Text style={styles.sectionTitle}>Hatırlatma saatleri</Text>
@@ -331,16 +447,16 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
         </Pressable>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        <Pressable accessibilityRole="button" disabled={isSaving}
-          style={[styles.saveButton, isSaving && styles.disabled]} onPress={() => { void save(); }}>
+        <Pressable accessibilityRole="button" disabled={isBusy}
+          style={[styles.saveButton, isBusy && styles.disabled]} onPress={() => { void save(); }}>
           <Text style={styles.saveText}>{isSaving ? 'Kaydediliyor…' : 'Kaydet'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={isSaving} style={styles.cancelButton}
+        <Pressable accessibilityRole="button" disabled={isBusy} style={styles.cancelButton}
           onPress={() => router.dismissTo('/medications')}>
           <Text style={styles.linkText}>İptal</Text>
         </Pressable>
         {medicationId !== undefined ? (
-          <Pressable accessibilityRole="button" disabled={isSaving} style={styles.deactivateButton}
+          <Pressable accessibilityRole="button" disabled={isBusy} style={styles.deactivateButton}
             onPress={confirmRemove}>
             <Text style={styles.deactivateText}>İlacı kaldır</Text>
           </Pressable>
@@ -368,6 +484,23 @@ const styles = StyleSheet.create({
   },
   noteInput: { minHeight: 96 },
   sectionTitle: { color: colors.text, fontSize: 22, fontWeight: fontWeight.bold },
+  photoSection: { gap: spacing.medium },
+  photoActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.small },
+  photoButton: {
+    minHeight: touchTarget.primary,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.button,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.medium,
+  },
+  removePhotoButton: {
+    alignSelf: 'flex-start',
+    minHeight: touchTarget.minimum,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.small,
+  },
   scheduleCard: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

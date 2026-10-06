@@ -22,6 +22,7 @@ export type MedicationInput = {
   name: string;
   dosage: string;
   instructions: string | null;
+  photoPath: string | null;
   schedules: ScheduleInput[];
 };
 

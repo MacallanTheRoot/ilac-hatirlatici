@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Screen } from '@/components/Screen';
+import { MedicationPhoto } from '@/components/MedicationPhoto';
 import { getActiveMedications } from '@/db/medications';
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 import type { MedicationWithSchedules } from '@/types/medication';
@@ -67,6 +68,9 @@ export default function MedicationsScreen() {
         ) : null}
         {!loading && !error && medications.map((medication) => (
           <View key={medication.id} style={styles.card}>
+            {medication.photoPath ? (
+              <MedicationPhoto uri={medication.photoPath} size={88} />
+            ) : null}
             <Text style={styles.medicationName}>{medication.name}</Text>
             <Text style={styles.dosage}>{medication.dosage}</Text>
             <View style={styles.schedules}>

@@ -10,6 +10,7 @@
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.macallan.dadmedicine",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#145DA8",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
@@ -17,7 +18,13 @@
     },
     "plugins": [
       "expo-router",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-image-picker",
+        {
+          "microphonePermission": false
+        }
+      ]
     ]
   }
 }

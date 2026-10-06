@@ -41,7 +41,7 @@ export function normalizeMedicationInput(input: MedicationInput): MedicationInpu
     return schedule;
   });
 
-  return { name, dosage, instructions, schedules };
+  return { name, dosage, instructions, photoPath: input.photoPath, schedules };
 }
 
 export function formatTime(schedule: ScheduleInput): string {
