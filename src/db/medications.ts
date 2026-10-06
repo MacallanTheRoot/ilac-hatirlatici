@@ -105,6 +105,29 @@ export async function getActiveMedications(db: SQLiteDatabase): Promise<Medicati
   }));
 }
 
+// Includes inactive rows so past occurrences survive schedule edits and medication removal.
+export async function getMedicationTimeline(db: SQLiteDatabase): Promise<MedicationWithSchedules[]> {
+  const medicationRows = await db.getAllAsync<MedicationRow>(
+    'SELECT * FROM medications ORDER BY id',
+  );
+  if (medicationRows.length === 0) return [];
+
+  const scheduleRows = await db.getAllAsync<ScheduleRow>(
+    'SELECT * FROM medication_schedules ORDER BY medication_id, id',
+  );
+  const schedulesByMedication = new Map<number, MedicationSchedule[]>();
+  for (const row of scheduleRows) {
+    const schedules = schedulesByMedication.get(row.medication_id) ?? [];
+    schedules.push(toSchedule(row));
+    schedulesByMedication.set(row.medication_id, schedules);
+  }
+
+  return medicationRows.map((row) => ({
+    ...toMedication(row),
+    schedules: schedulesByMedication.get(row.id) ?? [],
+  }));
+}
+
 export async function getMedicationById(
   db: SQLiteDatabase,
   id: number,

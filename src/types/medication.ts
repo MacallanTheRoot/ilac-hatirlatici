@@ -50,3 +50,30 @@ export type MedicationWithSchedules = Medication & {
 };
 
 export type DoseLogStatus = 'pending' | 'taken' | 'snoozed' | 'unconfirmed';
+
+export type DoseLog = {
+  id: number;
+  medicationId: number;
+  scheduleId: number;
+  scheduledAt: number;
+  takenAt: number | null;
+  status: DoseLogStatus;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type DoseOccurrence = {
+  medicationId: number;
+  scheduleId: number;
+  medicationName: string;
+  dosage: string;
+  instructions: string | null;
+  photoPath: string | null;
+  scheduledAt: number;
+  hour: number;
+  minute: number;
+  weekdayMask: number;
+  doseLogId: number | null;
+  status: DoseLogStatus | null;
+  takenAt: number | null;
+};
