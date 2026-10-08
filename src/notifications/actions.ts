@@ -49,7 +49,9 @@ export async function performMedicationDoseAction(
   providedDb?: SQLite.SQLiteDatabase,
   requestIdentifier?: string,
 ): Promise<NotificationActionResult> {
-  const db = providedDb ?? await SQLite.openDatabaseAsync(DATABASE_NAME);
+  // A headless task can run in the same Android process as SQLiteProvider.
+  // Give it its own native handle so closing it cannot invalidate the UI handle.
+  const db = providedDb ?? await SQLite.openDatabaseAsync(DATABASE_NAME, { useNewConnection: true });
   try {
     if (!providedDb) await initializeDatabase(db);
     if (action === 'taken') {
@@ -79,6 +81,12 @@ export async function performMedicationDoseAction(
       return 'alreadyTaken';
     }
 
+    // Replenish the base horizon before creating the snooze. A concurrent
+    // reconciliation must not remove the just-created native snooze request.
+    const syncResult = await syncMedicationReminders(db);
+    if (syncResult.status !== 'scheduled') {
+      console.warn('Reminder synchronization incomplete before snooze:', syncResult);
+    }
     await scheduleSnoozeReminder(identity, medication.name, medication.dosage);
     let log;
     try {
@@ -107,10 +115,6 @@ export async function performMedicationDoseAction(
       console.warn('Could not cancel original reminder after snooze:', cause);
     }
     await dismissDoseNotifications(identity, requestIdentifier);
-    const result = await syncMedicationReminders(db);
-    if (result.status !== 'scheduled') {
-      console.warn('Snooze saved but reminders are not fully active:', result);
-    }
     return 'snoozed';
   } finally {
     if (!providedDb) {

@@ -31,7 +31,14 @@ export function medicationNotificationPayload(
   kind: MedicationNotificationPayload['kind'],
   identity: DoseNotificationIdentity,
 ): MedicationNotificationPayload {
-  return { owner: 'dad-medicine', version: 1, kind, ...identity };
+  return {
+    owner: 'dad-medicine',
+    version: 1,
+    kind,
+    medicationId: identity.medicationId,
+    scheduleId: identity.scheduleId,
+    scheduledAt: identity.scheduledAt,
+  };
 }
 
 export function parseMedicationNotificationPayload(value: unknown): MedicationNotificationPayload | null {
