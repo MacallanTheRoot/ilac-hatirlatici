@@ -26,6 +26,7 @@ export default function RootLayout() {
           <Stack.Screen name="settings" />
           <Stack.Screen name="medication/new" />
           <Stack.Screen name="medication/[id]" />
+          <Stack.Screen name="alarm" />
         </Stack>
       </SQLiteProvider>
     </Suspense>

@@ -14,6 +14,7 @@ import {
 
 import { Screen } from '@/components/Screen';
 import { MedicationPhoto } from '@/components/MedicationPhoto';
+import { TimeWheelPicker } from '@/components/TimeWheelPicker';
 import {
   createMedication,
   deactivateMedication,
@@ -23,6 +24,7 @@ import {
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 import { deleteMedicationPhoto, persistMedicationPhoto } from '@/services/medicationPhotos';
 import { syncMedicationReminders } from '@/notifications/scheduler';
+import { openReminderSoundSettings } from '@/notifications/channelSettings';
 import { EVERY_DAY, WEEKDAYS, type MedicationInput } from '@/types/medication';
 import { MedicationValidationError, normalizeMedicationInput } from '@/utils/medication';
 
@@ -35,7 +37,14 @@ type ScheduleDraft = {
 };
 
 function emptySchedule(key: number): ScheduleDraft {
-  return { key, hour: '', minute: '', recurrence: 'daily', selectedMask: 0 };
+  const next = new Date(Date.now() + 5 * 60_000);
+  return {
+    key,
+    hour: String(next.getHours()).padStart(2, '0'),
+    minute: String(next.getMinutes()).padStart(2, '0'),
+    recurrence: 'daily',
+    selectedMask: 0,
+  };
 }
 
 function parseTimePart(value: string): number {
@@ -58,6 +67,7 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isChoosingPhoto, setIsChoosingPhoto] = useState(false);
+  const [editingTimeKey, setEditingTimeKey] = useState<number | null>(null);
   const savingRef = useRef(false);
   const photoActionRef = useRef(false);
   const nextScheduleKey = useRef(1);
@@ -119,6 +129,18 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
       ? current.filter((schedule) => schedule.key !== key)
       : current,
     );
+  }
+
+  async function chooseAlarmSound() {
+    try {
+      const opened = await openReminderSoundSettings();
+      if (opened === 'app') {
+        Alert.alert('Alarm sesi', 'Bildirimler bölümünde İlaç hatırlatmaları kanalının Ses ayarını açın.');
+      }
+    } catch (cause) {
+      console.error('Could not open reminder sound settings:', cause);
+      setError('Ses ayarları açılamadı. Lütfen telefon ayarlarını kontrol edin.');
+    }
   }
 
   function buildInput(): MedicationInput {
@@ -409,32 +431,13 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
                 </Pressable>
               ) : null}
             </View>
-            <View style={styles.timeRow}>
-              <View style={styles.timeField}>
-                <Text style={styles.label}>Saat</Text>
-                <TextInput
-                  accessibilityLabel={`${index + 1}. hatırlatma saati`}
-                  style={styles.timeInput}
-                  keyboardType="number-pad"
-                  value={schedule.hour}
-                  onChangeText={(hour) => updateSchedule(schedule.key, { hour })}
-                  placeholder="09"
-                  placeholderTextColor={colors.secondaryText}
-                />
-              </View>
-              <View style={styles.timeField}>
-                <Text style={styles.label}>Dakika</Text>
-                <TextInput
-                  accessibilityLabel={`${index + 1}. hatırlatma dakikası`}
-                  style={styles.timeInput}
-                  keyboardType="number-pad"
-                  value={schedule.minute}
-                  onChangeText={(minute) => updateSchedule(schedule.key, { minute })}
-                  placeholder="00"
-                  placeholderTextColor={colors.secondaryText}
-                />
-              </View>
-            </View>
+            <Pressable accessibilityRole="button" disabled={isBusy}
+              accessibilityLabel={`${index + 1}. hatırlatma saati ${schedule.hour}:${schedule.minute}, değiştirmek için dokunun`}
+              style={styles.timePickerButton}
+              onPress={() => setEditingTimeKey(schedule.key)}>
+              <Text style={styles.timePickerValue}>{schedule.hour}:{schedule.minute}</Text>
+              <Text style={styles.timePickerHint}>Saati değiştir</Text>
+            </Pressable>
 
             <Text style={styles.label}>Tekrar</Text>
             <View style={styles.choiceRow}>
@@ -482,6 +485,15 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
           <Text style={styles.linkText}>Saat ekle</Text>
         </Pressable>
 
+        <View style={styles.soundSection}>
+          <Text style={styles.sectionTitle}>Alarm sesi</Text>
+          <Text style={styles.soundDescription}>Tüm ilaç hatırlatmaları için telefonunuzun ses ayarı kullanılır.</Text>
+          <Pressable accessibilityRole="button" disabled={isBusy} style={styles.addTimeButton}
+            onPress={() => { void chooseAlarmSound(); }}>
+            <Text style={styles.linkText}>Ses seç</Text>
+          </Pressable>
+        </View>
+
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Pressable accessibilityRole="button" disabled={isBusy}
           style={[styles.saveButton, isBusy && styles.disabled]} onPress={() => { void save(); }}>
@@ -498,6 +510,26 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
           </Pressable>
         ) : null}
       </ScrollView>
+      {editingTimeKey !== null ? (() => {
+        const editing = schedules.find((schedule) => schedule.key === editingTimeKey);
+        if (!editing) return null;
+        return (
+          <TimeWheelPicker
+            key={editingTimeKey}
+            visible
+            hour={parseTimePart(editing.hour)}
+            minute={parseTimePart(editing.minute)}
+            onCancel={() => setEditingTimeKey(null)}
+            onConfirm={(hour, minute) => {
+              updateSchedule(editingTimeKey, {
+                hour: String(hour).padStart(2, '0'),
+                minute: String(minute).padStart(2, '0'),
+              });
+              setEditingTimeKey(null);
+            }}
+          />
+        );
+      })() : null}
     </Screen>
   );
 }
@@ -555,19 +587,19 @@ const styles = StyleSheet.create({
   scheduleTitle: { color: colors.text, fontSize: 20, fontWeight: fontWeight.bold },
   removeTimeButton: { minHeight: touchTarget.minimum, justifyContent: 'center' },
   removeTimeText: { color: colors.danger, fontSize: fontSize.body, fontWeight: fontWeight.semibold },
-  timeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.medium },
-  timeField: { minWidth: 108, gap: spacing.small },
-  timeInput: {
-    backgroundColor: colors.surface,
+  timePickerButton: {
+    minHeight: 80,
     borderColor: colors.border,
     borderWidth: 1,
     borderRadius: radius.button,
-    color: colors.text,
-    fontSize: 24,
-    minHeight: touchTarget.primary,
-    minWidth: 108,
-    paddingHorizontal: spacing.medium,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.small,
   },
+  timePickerValue: { color: colors.text, fontSize: 32, fontWeight: fontWeight.bold },
+  timePickerHint: { color: colors.accent, fontSize: fontSize.body, fontWeight: fontWeight.semibold },
+  soundSection: { gap: spacing.medium },
+  soundDescription: { color: colors.secondaryText, fontSize: fontSize.body },
   choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.small },
   choice: {
     minHeight: touchTarget.minimum,

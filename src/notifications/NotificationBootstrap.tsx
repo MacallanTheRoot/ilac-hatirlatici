@@ -1,9 +1,15 @@
 import * as Notifications from 'expo-notifications';
+import { useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AppState } from 'react-native';
 
 import { handleMedicationNotificationResponse } from '@/notifications/actions';
+import {
+  baseReminderIdentifier,
+  payloadFromNotificationContent,
+  snoozeReminderIdentifier,
+} from '@/notifications/constants';
 import { emitReminderStateChanged } from '@/notifications/events';
 import {
   getReminderPermission,
@@ -14,14 +20,48 @@ import {
 
 export function NotificationBootstrap() {
   const db = useSQLiteContext();
+  const router = useRouter();
+  const handledTap = useRef<string | null>(null);
 
   useEffect(() => {
+    function openAlarmFromTap(response: Notifications.NotificationResponse) {
+      if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
+      const request = response.notification?.request;
+      const payload = payloadFromNotificationContent(request?.content);
+      if (!request || !payload) return;
+      const expected = payload.kind === 'dose'
+        ? baseReminderIdentifier(payload)
+        : snoozeReminderIdentifier(payload);
+      if (request.identifier !== expected) return;
+      const tapKey = `${request.identifier}:${response.notification.date}`;
+      if (handledTap.current === tapKey) return;
+      handledTap.current = tapKey;
+      Notifications.clearLastNotificationResponse();
+      router.push({
+        pathname: '/alarm',
+        params: {
+          medicationId: String(payload.medicationId),
+          scheduleId: String(payload.scheduleId),
+          scheduledAt: String(payload.scheduledAt),
+        },
+      });
+    }
+
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      if (response.actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER) {
+        openAlarmFromTap(response);
+        return;
+      }
+      // Expo SDK 57 runs the task only when native considers the app backgrounded.
+      // The response listener owns custom actions while it is foregrounded.
       if (AppState.currentState !== 'active') return;
       void handleMedicationNotificationResponse(response, db).catch((cause: unknown) => {
         console.error('Could not process foreground medication action:', cause);
       });
     });
+
+    const lastResponse = Notifications.getLastNotificationResponse();
+    if (lastResponse) openAlarmFromTap(lastResponse);
 
     const appStateSubscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
@@ -62,7 +102,7 @@ export function NotificationBootstrap() {
       subscription.remove();
       appStateSubscription.remove();
     };
-  }, [db]);
+  }, [db, router]);
 
   return null;
 }

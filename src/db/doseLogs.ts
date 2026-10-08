@@ -57,13 +57,6 @@ export async function getDoseLogsForRange(
   return rows.map(toDoseLog);
 }
 
-export async function getSnoozedDoseLogs(db: SQLiteDatabase): Promise<DoseLog[]> {
-  const rows = await db.getAllAsync<DoseLogRow>(
-    "SELECT * FROM dose_logs WHERE status = 'snoozed'",
-  );
-  return rows.map(toDoseLog);
-}
-
 export type MarkDoseTakenInput = {
   medicationId: number;
   scheduleId: number;
@@ -72,6 +65,20 @@ export type MarkDoseTakenInput = {
 };
 
 type DoseIdentity = Pick<MarkDoseTakenInput, 'medicationId' | 'scheduleId' | 'scheduledAt'>;
+
+export async function getDoseLogByIdentity(
+  db: SQLiteDatabase,
+  input: DoseIdentity,
+): Promise<DoseLog | null> {
+  const row = await db.getFirstAsync<DoseLogRow>(
+    `SELECT * FROM dose_logs
+     WHERE medication_id = ? AND schedule_id = ? AND scheduled_at = ?`,
+    input.medicationId,
+    input.scheduleId,
+    input.scheduledAt,
+  );
+  return row ? toDoseLog(row) : null;
+}
 
 function validateDoseIdentity(input: DoseIdentity): void {
   const { medicationId, scheduleId, scheduledAt } = input;
@@ -122,15 +129,9 @@ async function assertValidScheduledDose(db: SQLiteDatabase, input: DoseIdentity)
 }
 
 async function readDoseLog(db: SQLiteDatabase, input: DoseIdentity): Promise<DoseLog> {
-  const row = await db.getFirstAsync<DoseLogRow>(
-    `SELECT * FROM dose_logs
-     WHERE medication_id = ? AND schedule_id = ? AND scheduled_at = ?`,
-    input.medicationId,
-    input.scheduleId,
-    input.scheduledAt,
-  );
-  if (!row) throw new Error('Dose log could not be read after saving.');
-  return toDoseLog(row);
+  const log = await getDoseLogByIdentity(db, input);
+  if (!log) throw new Error('Dose log could not be read after saving.');
+  return log;
 }
 
 export async function markDoseTaken(db: SQLiteDatabase, input: MarkDoseTakenInput): Promise<DoseLog> {
@@ -181,15 +182,11 @@ export async function markDoseSnoozed(db: SQLiteDatabase, input: DoseIdentity): 
   validateDoseIdentity(input);
   let saved: DoseLog | null = null;
   await db.withExclusiveTransactionAsync(async (txn) => {
-    await assertValidScheduledDose(txn, input);
-    const activeSchedule = await txn.getFirstAsync(
-      `SELECT 1 FROM medication_schedules AS s
-       JOIN medications AS m ON m.id = s.medication_id
-       WHERE m.id = ? AND s.id = ? AND m.is_active = 1 AND s.is_active = 1`,
-      input.medicationId,
-      input.scheduleId,
-    );
-    if (!activeSchedule) throw new Error('Inactive dose cannot be snoozed.');
+    const eligibility = await getDoseSnoozeEligibility(txn, input);
+    if (eligibility === 'alreadyTaken') {
+      saved = await readDoseLog(txn, input);
+      return;
+    }
     const now = Date.now();
     await txn.runAsync(
       `INSERT INTO dose_logs
@@ -213,4 +210,28 @@ export async function markDoseSnoozed(db: SQLiteDatabase, input: DoseIdentity): 
   });
   if (!saved) throw new Error('Snooze status could not be saved.');
   return saved;
+}
+
+export async function getDoseSnoozeEligibility(
+  db: SQLiteDatabase,
+  input: DoseIdentity,
+): Promise<'allowed' | 'alreadyTaken'> {
+  validateDoseIdentity(input);
+  await assertValidScheduledDose(db, input);
+  const activeSchedule = await db.getFirstAsync(
+    `SELECT 1 FROM medication_schedules AS s
+     JOIN medications AS m ON m.id = s.medication_id
+     WHERE m.id = ? AND s.id = ? AND m.is_active = 1 AND s.is_active = 1`,
+    input.medicationId,
+    input.scheduleId,
+  );
+  if (!activeSchedule) throw new Error('Inactive dose cannot be snoozed.');
+  const existing = await db.getFirstAsync<Pick<DoseLogRow, 'status'>>(
+    `SELECT status FROM dose_logs
+     WHERE medication_id = ? AND schedule_id = ? AND scheduled_at = ?`,
+    input.medicationId,
+    input.scheduleId,
+    input.scheduledAt,
+  );
+  return existing?.status === 'taken' ? 'alreadyTaken' : 'allowed';
 }

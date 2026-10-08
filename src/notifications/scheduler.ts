@@ -2,13 +2,15 @@ import * as Notifications from 'expo-notifications';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { Platform } from 'react-native';
 
-import { getDoseLogsForRange, getSnoozedDoseLogs } from '@/db/doseLogs';
+import { getDoseLogByIdentity, getDoseLogsForRange } from '@/db/doseLogs';
 import { getActiveMedications } from '@/db/medications';
 import {
-  ACTION_SNOOZE_10,
+  ACTION_SNOOZE_5,
   ACTION_TAKEN,
+  SNOOZE_MINUTES,
   baseReminderIdentifier,
   medicationNotificationPayload,
+  parseMedicationNotificationPayload,
   REMINDER_CATEGORY_ID,
   REMINDER_CHANNEL_ID,
   snoozeReminderIdentifier,
@@ -40,6 +42,22 @@ export type ReminderSyncResult = {
   capped: boolean;
 };
 
+export async function getMedicationReminderInventory() {
+  const requests = await Notifications.getAllScheduledNotificationsAsync();
+  return requests.flatMap((request) => {
+    const payload = parseMedicationNotificationPayload(request.content.data);
+    if (!payload) return [];
+    return [{
+      identifier: request.identifier,
+      kind: payload.kind,
+      medicationId: payload.medicationId,
+      scheduleId: payload.scheduleId,
+      scheduledAt: payload.scheduledAt,
+      trigger: request.trigger,
+    }];
+  }).sort((a, b) => a.scheduledAt - b.scheduledAt || a.identifier.localeCompare(b.identifier));
+}
+
 let setupPromise: Promise<void> | null = null;
 let syncTail: Promise<unknown> = Promise.resolve();
 
@@ -50,7 +68,6 @@ export function prepareReminderNotifications(): Promise<void> {
         await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL_ID, {
           name: 'İlaç hatırlatmaları',
           importance: Notifications.AndroidImportance.HIGH,
-          sound: 'default',
           enableVibrate: true,
           vibrationPattern: [0, 250, 250, 250],
           bypassDnd: false,
@@ -58,7 +75,7 @@ export function prepareReminderNotifications(): Promise<void> {
       }
       await Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
         { identifier: ACTION_TAKEN, buttonTitle: 'Aldım', options: { opensAppToForeground: false } },
-        { identifier: ACTION_SNOOZE_10, buttonTitle: '10 dk ertele', options: { opensAppToForeground: false } },
+        { identifier: ACTION_SNOOZE_5, buttonTitle: '5 dk ertele', options: { opensAppToForeground: false } },
       ]);
     })().catch((cause: unknown) => {
       setupPromise = null;
@@ -122,10 +139,9 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
     const now = Date.now();
     const firstDay = localDayStart(new Date(now));
     const endExclusive = reminderHorizonEnd(now);
-    const [medications, logs, snoozedLogs, scheduled] = await Promise.all([
+    const [medications, logs, scheduled] = await Promise.all([
       getActiveMedications(db),
       getDoseLogsForRange(db, firstDay.getTime(), endExclusive),
-      getSnoozedDoseLogs(db),
       Notifications.getAllScheduledNotificationsAsync(),
     ]);
     const plan = planBaseReminders(now, medications, logs);
@@ -140,17 +156,14 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
     const changes = planBaseReconciliation(plan.desired, existing);
     result.retainedCount = changes.keep.length;
     const activeKeys = activeScheduleKeys(medications);
-    const snoozedKeys = new Set(snoozedLogs.map((log) =>
-      `${log.medicationId}:${log.scheduleId}:${log.scheduledAt}`));
-
     for (const request of existing) {
       const payload = ownedSnoozePayload(request);
       if (!payload) continue;
       const active = activeKeys.has(`${payload.medicationId}:${payload.scheduleId}`);
-      const snoozed = snoozedKeys.has(
-        `${payload.medicationId}:${payload.scheduleId}:${payload.scheduledAt}`,
-      );
-      if (request.identifier !== snoozeReminderIdentifier(payload) || !active || !snoozed) {
+      // A snooze may have been scheduled just before its SQLite write. Do not
+      // cancel that in-flight request merely because its log is not visible yet.
+      const log = active ? await getDoseLogByIdentity(db, payload) : null;
+      if (request.identifier !== snoozeReminderIdentifier(payload) || !active || log?.status === 'taken') {
         try {
           await Notifications.cancelScheduledNotificationAsync(request.identifier);
           result.canceledSnoozeCount++;
@@ -182,7 +195,6 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
             body: `${occurrence.medicationName} — ${occurrence.dosage}`,
             data: medicationNotificationPayload('dose', occurrence),
             categoryIdentifier: REMINDER_CATEGORY_ID,
-            sound: 'default',
             priority: Notifications.AndroidNotificationPriority.HIGH,
           },
           trigger: {
@@ -239,12 +251,11 @@ export async function scheduleSnoozeReminder(
       body: `${medicationName} — ${dosage}`,
       data: medicationNotificationPayload('snooze', identity),
       categoryIdentifier: REMINDER_CATEGORY_ID,
-      sound: 'default',
       priority: Notifications.AndroidNotificationPriority.HIGH,
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
-      date: now + 10 * 60_000,
+      date: now + SNOOZE_MINUTES * 60_000,
       channelId: REMINDER_CHANNEL_ID,
     },
   });

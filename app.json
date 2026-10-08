@@ -21,12 +21,19 @@
       "expo-router",
       "expo-sqlite",
       "expo-notifications",
+      "./plugins/withAndroidKotlinPackage",
       [
         "expo-image-picker",
         {
           "microphonePermission": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "8a2b40e2-4c7d-4847-a1b2-a866e819855d"
+      }
+    }
   }
 }

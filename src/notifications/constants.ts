@@ -1,7 +1,8 @@
 export const REMINDER_CHANNEL_ID = 'medication_reminders';
 export const REMINDER_CATEGORY_ID = 'MEDICATION_REMINDER';
 export const ACTION_TAKEN = 'TAKEN';
-export const ACTION_SNOOZE_10 = 'SNOOZE10';
+export const SNOOZE_MINUTES = 5;
+export const ACTION_SNOOZE_5 = 'SNOOZE5';
 export const BACKGROUND_NOTIFICATION_TASK = 'DAD_MEDICINE_NOTIFICATION_ACTION';
 
 export type MedicationNotificationPayload = {
@@ -49,4 +50,18 @@ export function parseMedicationNotificationPayload(value: unknown): MedicationNo
     scheduleId: Number(data.scheduleId),
     scheduledAt: Number(data.scheduledAt),
   };
+}
+
+/** Android's headless task serializes content.data as dataString. */
+export function payloadFromNotificationContent(content: unknown): MedicationNotificationPayload | null {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return null;
+  const values = content as Record<string, unknown>;
+  const direct = parseMedicationNotificationPayload(values.data);
+  if (direct) return direct;
+  if (typeof values.dataString !== 'string') return null;
+  try {
+    return parseMedicationNotificationPayload(JSON.parse(values.dataString));
+  } catch {
+    return null;
+  }
 }

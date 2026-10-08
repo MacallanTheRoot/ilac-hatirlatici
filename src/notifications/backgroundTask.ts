@@ -1,6 +1,5 @@
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
-import { AppState } from 'react-native';
 
 import { handleMedicationNotificationResponse } from '@/notifications/actions';
 import { BACKGROUND_NOTIFICATION_TASK } from '@/notifications/constants';
@@ -24,10 +23,6 @@ if (!TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
         return Notifications.BackgroundNotificationTaskResult.Failed;
       }
       if (!data || typeof data !== 'object' || !('actionIdentifier' in data)) {
-        return Notifications.BackgroundNotificationTaskResult.NoData;
-      }
-      // The mounted app's listener owns responses while it is active.
-      if (AppState.currentState === 'active') {
         return Notifications.BackgroundNotificationTaskResult.NoData;
       }
       try {

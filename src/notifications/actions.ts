@@ -2,14 +2,15 @@ import * as Notifications from 'expo-notifications';
 import * as SQLite from 'expo-sqlite';
 
 import { DATABASE_NAME, initializeDatabase } from '@/db/database';
-import { markDoseSnoozed, markDoseTaken } from '@/db/doseLogs';
+import { getDoseSnoozeEligibility, markDoseSnoozed, markDoseTaken } from '@/db/doseLogs';
 import { getMedicationById } from '@/db/medications';
 import {
-  ACTION_SNOOZE_10,
+  ACTION_SNOOZE_5,
   ACTION_TAKEN,
   baseReminderIdentifier,
-  parseMedicationNotificationPayload,
+  payloadFromNotificationContent,
   snoozeReminderIdentifier,
+  type DoseNotificationIdentity,
 } from '@/notifications/constants';
 import { emitDoseStateChanged } from '@/notifications/events';
 import {
@@ -30,28 +31,32 @@ async function dismissPresentedNotification(identifier: string): Promise<void> {
   }
 }
 
-async function processResponse(
-  response: Notifications.NotificationResponse,
-  providedDb?: SQLite.SQLiteDatabase,
-): Promise<NotificationActionResult> {
-  if (response.actionIdentifier !== ACTION_TAKEN
-    && response.actionIdentifier !== ACTION_SNOOZE_10) return 'ignored';
-  const payload = parseMedicationNotificationPayload(response.notification.request.content.data);
-  if (!payload) return 'ignored';
-  const expectedIdentifier = payload.kind === 'dose'
-    ? baseReminderIdentifier(payload)
-    : snoozeReminderIdentifier(payload);
-  const requestIdentifier = response.notification.request.identifier;
-  if (requestIdentifier !== expectedIdentifier) return 'ignored';
+async function dismissDoseNotifications(identity: DoseNotificationIdentity, requestIdentifier?: string) {
+  if (requestIdentifier) {
+    await dismissPresentedNotification(requestIdentifier);
+    return;
+  }
+  await Promise.all([
+    dismissPresentedNotification(baseReminderIdentifier(identity)),
+    dismissPresentedNotification(snoozeReminderIdentifier(identity)),
+  ]);
+}
 
+/** Shared by notification actions and the alarm screen. No React state or route logic. */
+export async function performMedicationDoseAction(
+  identity: DoseNotificationIdentity,
+  action: 'taken' | 'snooze',
+  providedDb?: SQLite.SQLiteDatabase,
+  requestIdentifier?: string,
+): Promise<NotificationActionResult> {
   const db = providedDb ?? await SQLite.openDatabaseAsync(DATABASE_NAME);
   try {
     if (!providedDb) await initializeDatabase(db);
-    if (response.actionIdentifier === ACTION_TAKEN) {
-      await markDoseTaken(db, payload);
+    if (action === 'taken') {
+      await markDoseTaken(db, identity);
       emitDoseStateChanged();
-      await cancelDoseNotifications(payload);
-      await dismissPresentedNotification(requestIdentifier);
+      await cancelDoseNotifications(identity);
+      await dismissDoseNotifications(identity, requestIdentifier);
       const result = await syncMedicationReminders(db);
       if (result.status !== 'scheduled') {
         console.warn('Dose confirmed but reminders are not fully active:', result);
@@ -59,16 +64,14 @@ async function processResponse(
       return 'taken';
     }
 
-    const medication = await getMedicationById(db, payload.medicationId);
-    if (!medication?.schedules.some((schedule) => schedule.id === payload.scheduleId)) {
-      await dismissPresentedNotification(requestIdentifier);
+    const medication = await getMedicationById(db, identity.medicationId);
+    if (!medication?.schedules.some((schedule) => schedule.id === identity.scheduleId)) {
       return 'ignored';
     }
-    const log = await markDoseSnoozed(db, payload);
-    emitDoseStateChanged();
-    if (log.status === 'taken') {
-      await cancelDoseNotifications(payload);
-      await dismissPresentedNotification(requestIdentifier);
+    const eligibility = await getDoseSnoozeEligibility(db, identity);
+    if (eligibility === 'alreadyTaken') {
+      await cancelDoseNotifications(identity);
+      await dismissDoseNotifications(identity, requestIdentifier);
       const result = await syncMedicationReminders(db);
       if (result.status !== 'scheduled') {
         console.warn('Taken dose still has a reminder warning:', result);
@@ -76,19 +79,34 @@ async function processResponse(
       return 'alreadyTaken';
     }
 
+    await scheduleSnoozeReminder(identity, medication.name, medication.dosage);
+    let log;
     try {
-      await scheduleSnoozeReminder(payload, medication.name, medication.dosage);
+      log = await markDoseSnoozed(db, identity);
     } catch (cause) {
-      console.error('Snooze status saved but native snooze could not be scheduled:', cause);
-      await syncMedicationReminders(db);
+      try {
+        await Notifications.cancelScheduledNotificationAsync(snoozeReminderIdentifier(identity));
+      } catch (cleanupCause) {
+        console.warn('Could not cancel snooze after dose-log failure:', cleanupCause);
+      }
       throw cause;
     }
+    emitDoseStateChanged();
+    if (log.status === 'taken') {
+      await cancelDoseNotifications(identity);
+      await dismissDoseNotifications(identity, requestIdentifier);
+      const result = await syncMedicationReminders(db);
+      if (result.status !== 'scheduled') {
+        console.warn('Taken dose still has a reminder warning:', result);
+      }
+      return 'alreadyTaken';
+    }
     try {
-      await Notifications.cancelScheduledNotificationAsync(baseReminderIdentifier(payload));
+      await Notifications.cancelScheduledNotificationAsync(baseReminderIdentifier(identity));
     } catch (cause) {
       console.warn('Could not cancel original reminder after snooze:', cause);
     }
-    await dismissPresentedNotification(requestIdentifier);
+    await dismissDoseNotifications(identity, requestIdentifier);
     const result = await syncMedicationReminders(db);
     if (result.status !== 'scheduled') {
       console.warn('Snooze saved but reminders are not fully active:', result);
@@ -103,6 +121,27 @@ async function processResponse(
       }
     }
   }
+}
+
+async function processResponse(
+  response: Notifications.NotificationResponse,
+  providedDb?: SQLite.SQLiteDatabase,
+): Promise<NotificationActionResult> {
+  if (response.actionIdentifier !== ACTION_TAKEN
+    && response.actionIdentifier !== ACTION_SNOOZE_5) return 'ignored';
+  const payload = payloadFromNotificationContent(response.notification.request.content);
+  if (!payload) return 'ignored';
+  const expectedIdentifier = payload.kind === 'dose'
+    ? baseReminderIdentifier(payload)
+    : snoozeReminderIdentifier(payload);
+  const requestIdentifier = response.notification.request.identifier;
+  if (requestIdentifier !== expectedIdentifier) return 'ignored';
+  return performMedicationDoseAction(
+    payload,
+    response.actionIdentifier === ACTION_TAKEN ? 'taken' : 'snooze',
+    providedDb,
+    requestIdentifier,
+  );
 }
 
 export function handleMedicationNotificationResponse(
