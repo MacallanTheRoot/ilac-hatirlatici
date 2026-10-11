@@ -1,0 +1,19 @@
+# V2 P0 regression contracts (synthetic tests only)
+
+Baseline: published v1.0.0 source commit `7f5d37369fc65ba2b86fd5c6e6bcba8957086bfd`. These are behavior contracts for later V2 work, not a claim of Android device acceptance. Run the existing `npm run test:alarms` and the additional `node scripts/smoke-v2-reliability.cjs` before changing schema, UI, locale, theme or notification delivery.
+
+| Protected contract | Automated evidence |
+| --- | --- |
+| Dose identity is `(medication_id, schedule_id, scheduled_at)`; the v2 schema enforces uniqueness and medication/schedule foreign keys. An edit inserts new schedule IDs; inactive rows and their logs remain. | `smoke-v2-reliability.cjs` uses actual v2 migration and in-memory SQLite, verifies schema, foreign keys, edit/deactivation and history. |
+| A repeated explicit Taken action keeps one log and its first `taken_at`. Snooze cannot turn Taken back into snoozed. Three same-minute medications keep separate IDs, payloads, names/doses and logs. | `smoke-v2-reliability.cjs`, `smoke-native-alarm.cjs`, `smoke-alarm-sequencing.cjs`. |
+| Same-minute alarm order is scheduled instant, medication `createdAt`, medication ID, schedule ID; restart/input order does not change it. Taken/snoozed/inactive entries do not reappear as eligible base alarms. | `smoke-v2-reliability.cjs`, `smoke-alarm-sequencing.cjs`. |
+| Five-minute snooze has its own request ID and retains the original dose identity. Native scheduling succeeds before SQLite becomes snoozed. A scheduling/DB failure leaves a retry path. | `smoke-native-alarm.cjs`, `smoke-v2-reliability.cjs`. |
+| Headless actions parse `dataString`, use a separate SQLite handle and close only that handle. Duplicate notification callbacks do not write twice. A later tap on an unanswered notification may reopen it. | `smoke-native-alarm.cjs`, `smoke-alarm-sequencing.cjs`. |
+| Invalid full-screen routes release the native visible-screen guard. Native singleTask delivery has distinct PendingIntent identity and a bounded lease; the UI never marks a dose Taken without an explicit action. | `smoke-native-alarm.cjs`, `smoke-alarm-sequencing.cjs` source/mocks. Physical lifecycle remains a device test. |
+| Channel migration retains base/snooze ID, payload and trigger instant, skips near-due requests, retries partial failure and protects presented notifications from premature channel deletion. | `smoke-channel-migration.cjs`. |
+| Local calendar arithmetic crosses midnight/month/year and 23/25-hour DST days without assuming that all days are 24 hours. A nonexistent local wall time is not remapped to another dose time. | `smoke-v2-reliability.cjs`. Fall-back repeated-hour behavior remains the V1 implementation; no new policy is selected here. |
+| History shows explicit Taken only for a Taken log; an absent or `unconfirmed` log is not silently called Taken or Missed. | `smoke-v2-reliability.cjs` reconstructs both cases with the real occurrence helper. |
+
+`scripts/fixtures/v2-reliability.cjs` creates only fictional v2 databases. Most cases use memory; one connection-restart case uses a new temporary SQLite file and removes only that test-created directory. `snapshotV2()` captures IDs, rows, statuses, timestamps and foreign-key results for a future additive v3 migration test. It does not access the owner's database or photographs. A future migration gate should test concurrent handles, rollback during v3, and preservation of medical rows before production migration code is changed.
+
+These tests cannot establish locked-screen presentation, OEM background behavior, ringtone audibility, permission state, process death or exact alarm delivery on a physical phone. Those require a newly reviewed V2 build and separately authorized Xiaomi/Samsung testing. Do not infer new device support from mocks.
