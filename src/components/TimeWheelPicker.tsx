@@ -13,6 +13,8 @@ import {
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 
 const ROW_HEIGHT = 72;
+const VISIBLE_ROWS = 3;
+const PADDING_ROWS = (VISIBLE_ROWS - 1) / 2;
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 const MINUTES = Array.from({ length: 60 }, (_, minute) => minute);
 
@@ -136,10 +138,10 @@ const styles = StyleSheet.create({
     fontWeight: fontWeight.bold,
     textAlign: 'center',
   },
-  wheel: { height: ROW_HEIGHT * 5, overflow: 'hidden' },
-  wheelPadding: { paddingVertical: ROW_HEIGHT * 2 },
+  wheel: { height: ROW_HEIGHT * VISIBLE_ROWS, overflow: 'hidden' },
+  wheelPadding: { paddingVertical: ROW_HEIGHT * PADDING_ROWS },
   selectionFrame: {
-    position: 'absolute', top: ROW_HEIGHT * 2, left: 0, right: 0,
+    position: 'absolute', top: ROW_HEIGHT * PADDING_ROWS, left: 0, right: 0,
     height: ROW_HEIGHT,
     borderColor: colors.accent,
     borderWidth: 2,

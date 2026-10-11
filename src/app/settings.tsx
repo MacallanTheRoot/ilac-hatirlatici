@@ -1,13 +1,19 @@
 import { Link } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Screen } from '@/components/Screen';
 import { getDoseLogsForRange } from '@/db/doseLogs';
 import { createMedication } from '@/db/medications';
-import { openReminderSoundSettings } from '@/notifications/channelSettings';
-import { getMedicationReminderInventory, syncMedicationReminders } from '@/notifications/scheduler';
+import { getAlarmSound, pickAlarmSound, type AlarmSound } from '@/notifications/alarmSound';
+import {
+  canUseFullScreenAlarm,
+  isFullScreenAlarmEnabled,
+  openFullScreenAlarmSettings,
+  setFullScreenAlarmEnabled,
+} from '@/notifications/fullScreenAlarm';
+import { changeMedicationAlarmSoundChannel, getMedicationReminderInventory, syncMedicationReminders } from '@/notifications/scheduler';
 import { localDayOffset, localDayStart, weekdayBitForDate } from '@/services/doseOccurrences';
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 
@@ -16,15 +22,74 @@ export default function SettingsScreen() {
   const [diagnostics, setDiagnostics] = useState('');
   const [inspecting, setInspecting] = useState(false);
   const [soundError, setSoundError] = useState(false);
+  const [sound, setSound] = useState<AlarmSound | null>(null);
+  const [soundBusy, setSoundBusy] = useState(false);
+  const [fullScreenEnabled, setFullScreenEnabled] = useState(false);
+  const [fullScreenAllowed, setFullScreenAllowed] = useState(false);
+  const [fullScreenBusy, setFullScreenBusy] = useState(false);
+  const [fullScreenError, setFullScreenError] = useState(false);
+
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        setFullScreenEnabled(isFullScreenAlarmEnabled());
+        setFullScreenAllowed(canUseFullScreenAlarm());
+        setSound(getAlarmSound());
+      } catch (cause) {
+        console.error('Could not read full-screen alarm state:', cause);
+        setFullScreenError(true);
+      }
+    };
+    refresh();
+    const listener = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh();
+    });
+    return () => listener.remove();
+  }, []);
+
+  async function toggleFullScreenAlarm() {
+    if (fullScreenBusy) return;
+    setFullScreenBusy(true);
+    setFullScreenError(false);
+    try {
+      const next = !fullScreenEnabled;
+      await setFullScreenAlarmEnabled(next);
+      setFullScreenEnabled(next);
+      setFullScreenAllowed(canUseFullScreenAlarm());
+    } catch (cause) {
+      console.error('Could not save full-screen alarm setting:', cause);
+      setFullScreenError(true);
+    } finally {
+      setFullScreenBusy(false);
+    }
+  }
+
+  async function openFullScreenPermission() {
+    try {
+      await openFullScreenAlarmSettings();
+    } catch (cause) {
+      console.error('Could not open full-screen alarm settings:', cause);
+      setFullScreenError(true);
+    }
+  }
 
   async function chooseSound() {
+    if (soundBusy) return;
     setSoundError(false);
+    setSoundBusy(true);
     try {
-      const opened = await openReminderSoundSettings();
-      if (opened === 'app') setSoundError(true);
+      const selected = await pickAlarmSound();
+      if (selected) {
+        setSound(selected);
+        await changeMedicationAlarmSoundChannel();
+        const result = await syncMedicationReminders(db);
+        if (result.status === 'partialFailure') setSoundError(true);
+      }
     } catch (cause) {
-      console.error('Could not open medication sound settings:', cause);
+      console.error('Could not update medication alarm sound:', cause);
       setSoundError(true);
+    } finally {
+      setSoundBusy(false);
     }
   }
 
@@ -94,6 +159,7 @@ export default function SettingsScreen() {
 
   return (
     <Screen>
+      <ScrollView contentContainerStyle={styles.page}>
       <Link href="/" asChild>
         <Pressable accessibilityRole="button" style={styles.backButton}>
           <Text style={styles.backText}>Geri</Text>
@@ -102,16 +168,35 @@ export default function SettingsScreen() {
       <Text accessibilityRole="header" style={styles.title}>Ayarlar</Text>
       <View style={styles.card}>
         <Text style={styles.description}>Alarm sesi</Text>
-        <Text style={styles.help}>Tüm ilaç hatırlatmaları aynı telefon sesini kullanır.</Text>
-        <Pressable accessibilityRole="button" style={styles.soundButton}
+        <Text style={styles.help}>Seçili ses: {sound?.title ?? 'Varsayılan alarm sesi'}</Text>
+        {sound?.fellBack ? <Text style={styles.help}>Seçilen ses artık bulunamadı; telefonun varsayılan alarm sesi kullanılacak.</Text> : null}
+        <Text style={styles.help}>Telefonun alarm seslerinden birini seçin. Varsayılan alarm sesine de dönebilirsiniz.</Text>
+        <Pressable accessibilityRole="button" disabled={soundBusy} style={styles.soundButton}
           onPress={() => { void chooseSound(); }}>
-          <Text style={styles.backText}>Ses seç</Text>
+          <Text style={styles.backText}>{soundBusy ? 'Kaydediliyor…' : 'Alarm sesi seç'}</Text>
         </Pressable>
         {soundError ? (
-          <Text style={styles.help}>
-            Bildirimler bölümünde İlaç hatırlatmaları kanalının Ses ayarını açın.
-          </Text>
+          <Text style={styles.help}>Ses ayarı veya hatırlatmaların güncellenmesi tamamlanamadı. Uygulama açıldığında yeniden denenecek.</Text>
         ) : null}
+      </View>
+      <View style={styles.card}>
+        <Text style={styles.description}>Tam ekran ilaç alarmı</Text>
+        <Text style={styles.help}>Telefon izin verirse ilaç saatinde kilit ekranında alarm açılabilir.</Text>
+        <Text style={styles.help}>İlaç adı ve fotoğrafı kilit ekranında görünebilir.</Text>
+        <Pressable accessibilityRole="switch" accessibilityState={{ checked: fullScreenEnabled, disabled: fullScreenBusy }}
+          disabled={fullScreenBusy} style={styles.soundButton} onPress={() => { void toggleFullScreenAlarm(); }}>
+          <Text style={styles.backText}>{fullScreenEnabled ? 'Açık — kapat' : 'Kapalı — aç'}</Text>
+        </Pressable>
+        {fullScreenEnabled && !fullScreenAllowed ? (
+          <View>
+            <Text style={styles.help}>Telefon tam ekran alarmına izin vermiyor. Normal bildirimler devam eder.</Text>
+            <Pressable accessibilityRole="button" style={styles.soundButton}
+              onPress={() => { void openFullScreenPermission(); }}>
+              <Text style={styles.backText}>Telefon ayarlarını aç</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {fullScreenError ? <Text style={styles.help}>Tam ekran alarmı ayarı açılamadı. Lütfen tekrar deneyin.</Text> : null}
       </View>
       {__DEV__ ? (
         <View style={styles.card}>
@@ -133,11 +218,24 @@ export default function SettingsScreen() {
           </ScrollView>
         </View>
       ) : null}
+      <View style={styles.credit}>
+        <Text style={styles.creditTitle}>Geliştirici</Text>
+        <View style={styles.creditRow}>
+          <Pressable accessibilityRole="link" accessibilityLabel="MacallanTheRoot GitHub profili"
+            style={styles.creditTap} onPress={() => { void Linking.openURL('https://github.com/MacallanTheRoot/'); }}>
+            <Text style={styles.creditLink}>MacallanTheRoot</Text>
+          </Pressable>
+          <Text style={styles.creditText}>tarafından geliştirildi</Text>
+        </View>
+        <Text style={styles.dedication}>Babam için</Text>
+      </View>
+      </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  page: { paddingBottom: spacing.xlarge },
   backButton: {
     alignSelf: 'flex-start',
     minHeight: touchTarget.minimum,
@@ -180,4 +278,11 @@ const styles = StyleSheet.create({
   },
   inventory: { maxHeight: 300, marginTop: spacing.medium },
   inventoryText: { color: colors.text, fontSize: 16 },
+  credit: { alignItems: 'center', gap: spacing.small, marginTop: spacing.xlarge, padding: spacing.medium },
+  creditTitle: { color: colors.text, fontSize: fontSize.body, fontWeight: fontWeight.semibold },
+  creditRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  creditTap: { minHeight: touchTarget.minimum, justifyContent: 'center' },
+  creditText: { color: colors.secondaryText, fontSize: fontSize.secondary, textAlign: 'center' },
+  creditLink: { color: colors.accent, textDecorationLine: 'underline' },
+  dedication: { color: colors.secondaryText, fontSize: fontSize.secondary, fontStyle: 'italic' },
 });

@@ -23,8 +23,8 @@ import {
 } from '@/db/medications';
 import { colors, fontSize, fontWeight, radius, spacing, touchTarget } from '@/theme/tokens';
 import { deleteMedicationPhoto, persistMedicationPhoto } from '@/services/medicationPhotos';
-import { syncMedicationReminders } from '@/notifications/scheduler';
-import { openReminderSoundSettings } from '@/notifications/channelSettings';
+import { changeMedicationAlarmSoundChannel, syncMedicationReminders } from '@/notifications/scheduler';
+import { pickAlarmSound } from '@/notifications/alarmSound';
 import { EVERY_DAY, WEEKDAYS, type MedicationInput } from '@/types/medication';
 import { MedicationValidationError, normalizeMedicationInput } from '@/utils/medication';
 
@@ -133,13 +133,11 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
 
   async function chooseAlarmSound() {
     try {
-      const opened = await openReminderSoundSettings();
-      if (opened === 'app') {
-        Alert.alert('Alarm sesi', 'Bildirimler bölümünde İlaç hatırlatmaları kanalının Ses ayarını açın.');
-      }
+      const selected = await pickAlarmSound();
+      if (selected) await changeMedicationAlarmSoundChannel();
     } catch (cause) {
-      console.error('Could not open reminder sound settings:', cause);
-      setError('Ses ayarları açılamadı. Lütfen telefon ayarlarını kontrol edin.');
+      console.error('Could not choose alarm sound:', cause);
+      setError('Alarm sesi veya hatırlatmalar güncellenemedi. Lütfen tekrar deneyin.');
     }
   }
 
@@ -487,7 +485,7 @@ export function MedicationForm({ medicationId }: { medicationId?: number }) {
 
         <View style={styles.soundSection}>
           <Text style={styles.sectionTitle}>Alarm sesi</Text>
-          <Text style={styles.soundDescription}>Tüm ilaç hatırlatmaları için telefonunuzun ses ayarı kullanılır.</Text>
+          <Text style={styles.soundDescription}>Tüm ilaç hatırlatmaları için seçtiğiniz alarm sesi kullanılır.</Text>
           <Pressable accessibilityRole="button" disabled={isBusy} style={styles.addTimeButton}
             onPress={() => { void chooseAlarmSound(); }}>
             <Text style={styles.linkText}>Ses seç</Text>

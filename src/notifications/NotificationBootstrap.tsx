@@ -21,7 +21,7 @@ import {
 export function NotificationBootstrap() {
   const db = useSQLiteContext();
   const router = useRouter();
-  const handledTap = useRef<string | null>(null);
+  const handledTap = useRef<{ key: string; at: number } | null>(null);
 
   useEffect(() => {
     function openAlarmFromTap(response: Notifications.NotificationResponse) {
@@ -34,8 +34,10 @@ export function NotificationBootstrap() {
         : snoozeReminderIdentifier(payload);
       if (request.identifier !== expected) return;
       const tapKey = `${request.identifier}:${response.notification.date}`;
-      if (handledTap.current === tapKey) return;
-      handledTap.current = tapKey;
+      const now = Date.now();
+      if (handledTap.current?.key === tapKey && now - handledTap.current.at >= 0
+        && now - handledTap.current.at < 1_000) return;
+      handledTap.current = { key: tapKey, at: now };
       Notifications.clearLastNotificationResponse();
       router.push({
         pathname: '/alarm',
@@ -43,6 +45,8 @@ export function NotificationBootstrap() {
           medicationId: String(payload.medicationId),
           scheduleId: String(payload.scheduleId),
           scheduledAt: String(payload.scheduledAt),
+          kind: payload.kind,
+          source: 'tap',
         },
       });
     }

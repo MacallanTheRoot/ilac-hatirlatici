@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { Platform } from 'react-native';
 
+import { deleteAlarmChannel, ensureAlarmChannel, getAlarmChannelId, getDesiredAlarmChannelId, setAlarmChannelId } from '@/notifications/alarmSound';
 import { getDoseLogByIdentity, getDoseLogsForRange } from '@/db/doseLogs';
 import { getActiveMedications } from '@/db/medications';
 import {
@@ -12,7 +13,6 @@ import {
   medicationNotificationPayload,
   parseMedicationNotificationPayload,
   REMINDER_CATEGORY_ID,
-  REMINDER_CHANNEL_ID,
   snoozeReminderIdentifier,
   type DoseNotificationIdentity,
 } from '@/notifications/constants';
@@ -60,18 +60,16 @@ export async function getMedicationReminderInventory() {
 
 let setupPromise: Promise<void> | null = null;
 let syncTail: Promise<unknown> = Promise.resolve();
+const CHANNEL_MIGRATION_SAFETY_MS = 60_000;
 
 export function prepareReminderNotifications(): Promise<void> {
   if (!setupPromise) {
     setupPromise = (async () => {
       if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL_ID, {
-          name: 'İlaç hatırlatmaları',
-          importance: Notifications.AndroidImportance.HIGH,
-          enableVibrate: true,
-          vibrationPattern: [0, 250, 250, 250],
-          bypassDnd: false,
-        });
+        ensureAlarmChannel(getDesiredAlarmChannelId());
+        if (getAlarmChannelId() === getDesiredAlarmChannelId()) {
+          setAlarmChannelId(getDesiredAlarmChannelId());
+        }
       }
       await Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
         { identifier: ACTION_TAKEN, buttonTitle: 'Aldım', options: { opensAppToForeground: false } },
@@ -88,7 +86,7 @@ export function prepareReminderNotifications(): Promise<void> {
 export async function getReminderPermission(): Promise<ReminderPermission> {
   const result = await Notifications.getPermissionsAsync();
   if (Platform.OS === 'android' && result.granted) {
-    const channel = await Notifications.getNotificationChannelAsync(REMINDER_CHANNEL_ID);
+    const channel = await Notifications.getNotificationChannelAsync(getAlarmChannelId());
     if (channel?.importance === Notifications.AndroidImportance.NONE) {
       return { granted: false, canAskAgain: false, undetermined: false };
     }
@@ -98,6 +96,87 @@ export async function getReminderPermission(): Promise<ReminderPermission> {
     canAskAgain: result.canAskAgain,
     undetermined: result.status === 'undetermined',
   };
+}
+
+function scheduledChannel(request: Notifications.NotificationRequest): string | null {
+  return request.trigger && 'channelId' in request.trigger
+    ? String(request.trigger.channelId ?? '') : null;
+}
+
+function scheduledDate(request: Notifications.NotificationRequest): number | null {
+  const trigger = request.trigger;
+  if (trigger && 'type' in trigger && trigger.type === 'date' && 'value' in trigger) {
+    return Number(trigger.value);
+  }
+  return null;
+}
+
+/** Replaces each Expo request in place, retaining its identifier and fire time. */
+async function migrateScheduledChannels(target: string): Promise<number> {
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  let failures = 0;
+  for (const request of scheduled) {
+    const payload = parseMedicationNotificationPayload(request.content.data);
+    if (!payload || scheduledChannel(request) === target) continue;
+    const date = scheduledDate(request);
+    // Expo drops a one-shot request if its trigger expires during replacement.
+    // Keep near-due requests intact; the native delivery patch selects the
+    // current sound channel when the original request fires.
+    if (!date || date <= Date.now() + CHANNEL_MIGRATION_SAFETY_MS) continue;
+    try {
+      await Notifications.scheduleNotificationAsync({
+        identifier: request.identifier,
+        content: {
+          title: request.content.title ?? undefined,
+          body: request.content.body ?? undefined,
+          data: request.content.data,
+          categoryIdentifier: request.content.categoryIdentifier ?? undefined,
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date, channelId: target },
+      });
+    } catch (cause) {
+      failures++;
+      console.error('Could not migrate medication alarm channel:', cause);
+    }
+  }
+  return failures;
+}
+
+async function rotateMedicationAlarmSoundChannel(): Promise<void> {
+  await prepareReminderNotifications();
+  const next = getDesiredAlarmChannelId();
+  ensureAlarmChannel(next);
+  setAlarmChannelId(next);
+  if (await migrateScheduledChannels(next)) throw new Error('Alarm sound saved; reminder migration needs retry.');
+  await cleanupInactiveChannels();
+}
+
+export function changeMedicationAlarmSoundChannel(): Promise<void> {
+  const run = syncTail.then(rotateMedicationAlarmSoundChannel);
+  syncTail = run.catch(() => undefined);
+  return run;
+}
+
+async function cleanupInactiveChannels(): Promise<void> {
+  const [scheduled, presented, channels] = await Promise.all([
+    Notifications.getAllScheduledNotificationsAsync(),
+    Notifications.getPresentedNotificationsAsync(),
+    Notifications.getNotificationChannelsAsync(),
+  ]);
+  const ownedPresented = presented.filter((notification) =>
+    parseMedicationNotificationPayload(notification.request.content.data));
+  const uncertainPresentedChannel = ownedPresented.some((notification) =>
+    !scheduledChannel(notification.request));
+  for (const channel of channels ?? []) {
+    const id = channel.id;
+    if (!/^medication_alarm_[0-9a-f]{16}$/.test(id) || id === getAlarmChannelId()
+      || uncertainPresentedChannel) continue;
+    if (scheduled.some((request) => parseMedicationNotificationPayload(request.content.data)
+      && scheduledChannel(request) === id)) continue;
+    if (ownedPresented.some((notification) => scheduledChannel(notification.request) === id)) continue;
+    deleteAlarmChannel(id);
+  }
 }
 
 export async function requestReminderPermission(): Promise<ReminderPermission> {
@@ -134,6 +213,12 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
   const result = emptySyncResult('scheduled');
   try {
     await prepareReminderNotifications();
+    ensureAlarmChannel(getDesiredAlarmChannelId());
+    if (getAlarmChannelId() !== getDesiredAlarmChannelId()) {
+      await rotateMedicationAlarmSoundChannel();
+    }
+    const channelId = getAlarmChannelId();
+    result.failureCount += await migrateScheduledChannels(channelId);
     if (!(await getReminderPermission()).granted) return emptySyncResult('disabled');
 
     const now = Date.now();
@@ -200,7 +285,7 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: occurrence.scheduledAt,
-            channelId: REMINDER_CHANNEL_ID,
+            channelId,
           },
         });
         if (returnedIdentifier !== identifier) throw new Error('Native reminder identifier changed.');
@@ -211,6 +296,7 @@ async function performReminderSync(db: SQLiteDatabase): Promise<ReminderSyncResu
       }
     }
     if (result.failureCount > 0) result.status = 'partialFailure';
+    else await cleanupInactiveChannels();
     return result;
   } catch (cause) {
     result.status = 'partialFailure';
@@ -235,7 +321,7 @@ export async function cancelDoseNotifications(identity: DoseNotificationIdentity
   }
 }
 
-export async function scheduleSnoozeReminder(
+async function performScheduleSnoozeReminder(
   identity: DoseNotificationIdentity,
   medicationName: string,
   dosage: string,
@@ -256,8 +342,19 @@ export async function scheduleSnoozeReminder(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: now + SNOOZE_MINUTES * 60_000,
-      channelId: REMINDER_CHANNEL_ID,
+      channelId: getAlarmChannelId(),
     },
   });
   if (returnedIdentifier !== identifier) throw new Error('Native snooze identifier changed.');
+}
+
+export function scheduleSnoozeReminder(
+  identity: DoseNotificationIdentity,
+  medicationName: string,
+  dosage: string,
+  now?: number,
+): Promise<void> {
+  const run = syncTail.then(() => performScheduleSnoozeReminder(identity, medicationName, dosage, now ?? Date.now()));
+  syncTail = run.catch(() => undefined);
+  return run;
 }

@@ -1,4 +1,4 @@
-export const REMINDER_CHANNEL_ID = 'medication_reminders';
+export const LEGACY_REMINDER_CHANNEL_ID = 'medication_reminders';
 export const REMINDER_CATEGORY_ID = 'MEDICATION_REMINDER';
 export const ACTION_TAKEN = 'TAKEN';
 export const SNOOZE_MINUTES = 5;

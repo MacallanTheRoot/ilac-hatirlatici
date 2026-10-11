@@ -40,3 +40,32 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# release artifacts and private local data
+*.apk
+*.aab
+*.keystore
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.sqlite-*
+*.log
+.env
+.env.*
+!.env.example
+credentials.json
+service-account*.json
+google-services.json
+GoogleService-Info.plist
+docs/screenshots/private/
+**/captures/
+# Publication images need individual privacy review before explicit addition.
+docs/screenshots/*.png
+!docs/screenshots/01-today.png
+!docs/screenshots/02-medications.png
+!docs/screenshots/04-settings.png
+docs/screenshots/*.webp
+docs/screenshots/*.jpg
+docs/screenshots/*.jpeg

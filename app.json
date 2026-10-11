@@ -1,9 +1,12 @@
 {
   "expo": {
     "name": "İlaç Hatırlatıcı",
+    "description": "Babam için geliştirilen çevrimdışı Android ilaç hatırlatıcısı.",
     "slug": "dad-medicine",
     "version": "1.0.0",
-    "platforms": ["android"],
+    "platforms": [
+      "android"
+    ],
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "dadmedicine",
@@ -11,7 +14,10 @@
     "android": {
       "package": "com.macallan.dadmedicine",
       "allowBackup": false,
-      "permissions": ["android.permission.SCHEDULE_EXACT_ALARM"],
+      "permissions": [
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_FULL_SCREEN_INTENT"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#145DA8",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
@@ -22,12 +28,14 @@
       "expo-sqlite",
       "expo-notifications",
       "./plugins/withAndroidKotlinPackage",
+      "./plugins/withFullScreenMedicationAlarm",
       [
         "expo-image-picker",
         {
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "router": {},

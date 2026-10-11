@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import * as SQLite from 'expo-sqlite';
 
 import { DATABASE_NAME, initializeDatabase } from '@/db/database';
-import { getDoseSnoozeEligibility, markDoseSnoozed, markDoseTaken } from '@/db/doseLogs';
+import { getDoseLogByIdentity, getDoseSnoozeEligibility, markDoseSnoozed, markDoseTaken } from '@/db/doseLogs';
 import { getMedicationById } from '@/db/medications';
 import {
   ACTION_SNOOZE_5,
@@ -48,6 +48,7 @@ export async function performMedicationDoseAction(
   action: 'taken' | 'snooze',
   providedDb?: SQLite.SQLiteDatabase,
   requestIdentifier?: string,
+  originKind: 'dose' | 'snooze' = 'dose',
 ): Promise<NotificationActionResult> {
   // A headless task can run in the same Android process as SQLiteProvider.
   // Give it its own native handle so closing it cannot invalidate the UI handle.
@@ -79,6 +80,10 @@ export async function performMedicationDoseAction(
         console.warn('Taken dose still has a reminder warning:', result);
       }
       return 'alreadyTaken';
+    }
+    if (originKind === 'dose' && (await getDoseLogByIdentity(db, identity))?.status === 'snoozed') {
+      await dismissDoseNotifications(identity, requestIdentifier);
+      return 'snoozed';
     }
 
     // Replenish the base horizon before creating the snooze. A concurrent
@@ -145,6 +150,7 @@ async function processResponse(
     response.actionIdentifier === ACTION_TAKEN ? 'taken' : 'snooze',
     providedDb,
     requestIdentifier,
+    payload.kind,
   );
 }
 
